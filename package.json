@@ -1,0 +1,38 @@
+{
+  "name": "cursor-tts-mvp",
+  "displayName": "Lector de Texto Seleccionado (MVP)",
+  "description": "Extensión simple para leer en voz alta el texto seleccionado en Cursor/VS Code.",
+  "version": "0.1.0",
+  "publisher": "jairoprodev",
+  "engines": {
+    "vscode": ">=1.70.0"
+  },
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "tsc -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.70.0",
+    "typescript": "^4.9.5",
+    "vsce": "^2.15.0"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "cursor-tts-mvp.readSelection",
+        "title": "Leer texto seleccionado"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "cursor-tts-mvp.readSelection",
+        "key": "ctrl+alt+h",
+        "when": "editorTextFocus"
+      }
+    ]
+  },
+  "activationEvents": [
+    "onCommand:cursor-tts-mvp.readSelection"
+  ]
+}
