@@ -82,10 +82,32 @@ function getWebviewContent(text: string): string {
             white-space: pre-wrap;
             line-height: 1.5;
         }
+        .text-display .highlight {
+            background-color: var(--vscode-editor-selectionBackground, #264f78);
+            color: var(--vscode-editor-selectionForeground, #fff);
+            border-radius: 2px;
+            padding: 0 2px;
+        }
         .controls {
             display: flex;
             gap: 10px;
             margin: 20px 0;
+        }
+        .voice-select {
+            margin-bottom: 10px;
+        }
+        .rate-pitch-controls {
+            margin-bottom: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .rate-pitch-controls label {
+            font-size: 13px;
+            margin-bottom: 2px;
+        }
+        .rate-pitch-controls input[type="range"] {
+            width: 100%;
         }
         button {
             background-color: var(--vscode-button-background);
@@ -122,27 +144,45 @@ function getWebviewContent(text: string): string {
 <body>
     <div class="container">
         <h2>Lector de Texto Seleccionado</h2>
-        <div class="text-display">${escapeHtml(text)}</div>
-        
+        <div class="voice-select">
+            <label for="voiceSelect">Voz:</label>
+            <select id="voiceSelect"></select>
+        </div>
+        <div class="rate-pitch-controls">
+            <label for="rateRange">Velocidad: <span id="rateValue">1</span></label>
+            <input type="range" id="rateRange" min="0.5" max="2" step="0.05" value="1">
+            <label for="pitchRange">Tono: <span id="pitchValue">1</span></label>
+            <input type="range" id="pitchRange" min="0" max="2" step="0.05" value="1">
+        </div>
+        <div class="text-display" id="textDisplay">${escapeHtml(text)}</div>
         <div class="controls">
             <button id="playBtn">▶️ Reproducir</button>
             <button id="pauseBtn" disabled>⏸️ Pausar</button>
             <button id="stopBtn" disabled>⏹️ Detener</button>
+            <button id="clipboardBtn">📋 Leer portapapeles</button>
         </div>
-        
         <div id="status" class="status info" style="display: none;"></div>
     </div>
-
     <script>
         const vscode = acquireVsCodeApi();
         let synth = window.speechSynthesis;
         let utterance = null;
         let isPlaying = false;
-
+        let isPaused = false;
+        let voices = [];
+        let selectedVoice = null;
         const playBtn = document.getElementById('playBtn');
         const pauseBtn = document.getElementById('pauseBtn');
         const stopBtn = document.getElementById('stopBtn');
         const status = document.getElementById('status');
+        const voiceSelect = document.getElementById('voiceSelect');
+        const rateRange = document.getElementById('rateRange');
+        const pitchRange = document.getElementById('pitchRange');
+        const rateValue = document.getElementById('rateValue');
+        const pitchValue = document.getElementById('pitchValue');
+        const clipboardBtn = document.getElementById('clipboardBtn');
+        const textDisplay = document.getElementById('textDisplay');
+        let originalText = ${JSON.stringify(text)};
 
         function showStatus(message, isError = false) {
             status.textContent = message;
@@ -154,78 +194,210 @@ function getWebviewContent(text: string): string {
             playBtn.disabled = isPlaying;
             pauseBtn.disabled = !isPlaying;
             stopBtn.disabled = !isPlaying;
+            if (isPlaying && isPaused) {
+                pauseBtn.textContent = '▶️ Reanudar';
+            } else {
+                pauseBtn.textContent = '⏸️ Pausar';
+            }
+        }
+
+        function detectLanguage(text) {
+            // Heurística simple: si contiene letras acentuadas o 'ñ', es español
+            if (/[áéíóúüñÁÉÍÓÚÜÑ¿¡]/.test(text)) return 'es';
+            // Si contiene solo caracteres ASCII, probablemente inglés
+            if (/^[\x00-\x7F]*$/.test(text)) return 'en';
+            // Si contiene caracteres franceses
+            if (/[çàâêîôûëïüœÇÀÂÊÎÔÛËÏÜŒ]/.test(text)) return 'fr';
+            // Por defecto, inglés
+            return 'en';
+        }
+
+        function selectVoiceByLang(lang) {
+            const idx = voices.findIndex(v => v.lang && v.lang.startsWith(lang));
+            if (idx !== -1) voiceSelect.selectedIndex = idx;
+        }
+
+        // Al poblar voces, sugerir la voz según el idioma detectado
+        function populateVoices() {
+            voices = synth.getVoices();
+            voiceSelect.innerHTML = '';
+            voices.forEach((voice, i) => {
+                const option = document.createElement('option');
+                option.value = i;
+                option.textContent = `${voice.name} (${voice.lang})${voice.default ? ' [default]' : ''}`;
+                voiceSelect.appendChild(option);
+            });
+            // Detectar idioma del texto y sugerir voz
+            const lang = detectLanguage(originalText);
+            selectVoiceByLang(lang);
+        }
+
+        // Guardar y restaurar configuración en localStorage
+        function saveSettings() {
+            localStorage.setItem('tts_voice', voiceSelect.value);
+            localStorage.setItem('tts_rate', rateRange.value);
+            localStorage.setItem('tts_pitch', pitchRange.value);
+        }
+        function loadSettings() {
+            const v = localStorage.getItem('tts_voice');
+            const r = localStorage.getItem('tts_rate');
+            const p = localStorage.getItem('tts_pitch');
+            if (v !== null) voiceSelect.value = v;
+            if (r !== null) { rateRange.value = r; rateValue.textContent = r; }
+            if (p !== null) { pitchRange.value = p; pitchValue.textContent = p; }
+        }
+        voiceSelect.addEventListener('change', saveSettings);
+        rateRange.addEventListener('change', saveSettings);
+        pitchRange.addEventListener('change', saveSettings);
+        // Llamar después de poblar voces
+        synth.onvoiceschanged = () => { populateVoices(); loadSettings(); };
+        populateVoices();
+        loadSettings();
+
+        function highlightWord(index, wordArray) {
+            if (!textDisplay) return;
+            let html = '';
+            for (let i = 0; i < wordArray.length; i++) {
+                if (i === index) {
+                    html += `<span class="highlight">${escapeHtml(wordArray[i])}</span> `;
+                } else {
+                    html += `${escapeHtml(wordArray[i])} `;
+                }
+            }
+            textDisplay.innerHTML = html.trim();
+        }
+
+        function clearHighlight() {
+            if (textDisplay) textDisplay.innerHTML = escapeHtml(originalText);
         }
 
         function speak() {
             if (isPlaying) return;
-
-            // Detener cualquier síntesis en curso
             synth.cancel();
-
-            // Crear nueva utterance
-            utterance = new SpeechSynthesisUtterance(${JSON.stringify(text)});
-            
-            // Configurar voz en español si está disponible
-            const voices = synth.getVoices();
-            const spanishVoices = voices.filter(v => v.lang && v.lang.startsWith('es'));
-            if (spanishVoices.length > 0) {
-                utterance.voice = spanishVoices[0];
-            }
-
-            // Configurar eventos
+            utterance = new SpeechSynthesisUtterance(originalText);
+            const voiceIdx = parseInt(voiceSelect.value, 10);
+            if (voices[voiceIdx]) utterance.voice = voices[voiceIdx];
+            utterance.rate = parseFloat(rateRange.value);
+            utterance.pitch = parseFloat(pitchRange.value);
+            const words = originalText.split(/\s+/);
+            utterance.onboundary = function(event) {
+                if (event.name === 'word') {
+                    // Calcular el índice de la palabra actual
+                    let charIndex = event.charIndex;
+                    let count = 0, idx = 0;
+                    for (let i = 0; i < words.length; i++) {
+                        count += words[i].length + 1;
+                        if (charIndex < count) {
+                            idx = i;
+                            break;
+                        }
+                    }
+                    highlightWord(idx, words);
+                }
+            };
             utterance.onstart = () => {
                 isPlaying = true;
+                isPaused = false;
                 updateButtons();
                 showStatus('Leyendo texto...');
                 vscode.postMessage({ command: 'started' });
             };
-
             utterance.onend = () => {
                 isPlaying = false;
+                isPaused = false;
                 updateButtons();
                 showStatus('Lectura completada');
                 vscode.postMessage({ command: 'finished' });
+                clearHighlight();
             };
-
             utterance.onerror = (event) => {
                 isPlaying = false;
+                isPaused = false;
                 updateButtons();
                 showStatus('Error en la síntesis de voz: ' + event.error, true);
                 vscode.postMessage({ command: 'error', text: event.error });
+                clearHighlight();
             };
-
-            // Iniciar síntesis
             synth.speak(utterance);
         }
 
-        function pause() {
-            if (synth.speaking) {
+        function pauseOrResume() {
+            if (synth.speaking && !synth.paused) {
                 synth.pause();
+                isPaused = true;
                 showStatus('Lectura pausada');
+                updateButtons();
+            } else if (synth.paused) {
+                synth.resume();
+                isPaused = false;
+                showStatus('Reanudando lectura...');
+                updateButtons();
             }
         }
 
         function stop() {
             synth.cancel();
             isPlaying = false;
+            isPaused = false;
             updateButtons();
             showStatus('Lectura detenida');
         }
 
-        // Event listeners
-        playBtn.addEventListener('click', speak);
-        pauseBtn.addEventListener('click', pause);
-        stopBtn.addEventListener('click', stop);
+        async function speakClipboard() {
+            if (!navigator.clipboard) {
+                showStatus('El navegador no soporta la API del portapapeles', true);
+                return;
+            }
+            try {
+                const clipText = await navigator.clipboard.readText();
+                if (!clipText || clipText.trim().length === 0) {
+                    showStatus('El portapapeles está vacío.', true);
+                    return;
+                }
+                synth.cancel();
+                utterance = new SpeechSynthesisUtterance(clipText);
+                const voiceIdx = parseInt(voiceSelect.value, 10);
+                if (voices[voiceIdx]) utterance.voice = voices[voiceIdx];
+                utterance.rate = parseFloat(rateRange.value);
+                utterance.pitch = parseFloat(pitchRange.value);
+                utterance.onstart = () => {
+                    isPlaying = true;
+                    isPaused = false;
+                    updateButtons();
+                    showStatus('Leyendo texto del portapapeles...');
+                    vscode.postMessage({ command: 'started' });
+                };
+                utterance.onend = () => {
+                    isPlaying = false;
+                    isPaused = false;
+                    updateButtons();
+                    showStatus('Lectura completada');
+                    vscode.postMessage({ command: 'finished' });
+                };
+                utterance.onerror = (event) => {
+                    isPlaying = false;
+                    isPaused = false;
+                    updateButtons();
+                    showStatus('Error en la síntesis de voz: ' + event.error, true);
+                    vscode.postMessage({ command: 'error', text: event.error });
+                };
+                synth.speak(utterance);
+            } catch (err) {
+                showStatus('No se pudo leer el portapapeles: ' + err, true);
+            }
+        }
 
-        // Verificar si TTS está disponible
+        playBtn.addEventListener('click', speak);
+        pauseBtn.addEventListener('click', pauseOrResume);
+        stopBtn.addEventListener('click', stop);
+        clipboardBtn.addEventListener('click', speakClipboard);
+
         if (!synth) {
             showStatus('La síntesis de voz no está disponible en este navegador', true);
             vscode.postMessage({ command: 'error', text: 'TTS no disponible' });
         } else {
             showStatus('Listo para leer. Selecciona "Reproducir" para comenzar.');
         }
-
-        // Inicializar botones
         updateButtons();
     </script>
 </body>
