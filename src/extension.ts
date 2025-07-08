@@ -224,7 +224,7 @@ function getWebviewContent(text: string): string {
             voices.forEach((voice, i) => {
                 const option = document.createElement('option');
                 option.value = i;
-                option.textContent = `${voice.name} (${voice.lang})${voice.default ? ' [default]' : ''}`;
+                option.textContent = voice.name + ' (' + voice.lang + ')' + (voice.default ? ' [default]' : '');
                 voiceSelect.appendChild(option);
             });
             // Detectar idioma del texto y sugerir voz
@@ -259,9 +259,9 @@ function getWebviewContent(text: string): string {
             let html = '';
             for (let i = 0; i < wordArray.length; i++) {
                 if (i === index) {
-                    html += `<span class="highlight">${escapeHtml(wordArray[i])}</span> `;
+                    html += '<span class="highlight">' + escapeHtml(wordArray[i]) + '</span> ';
                 } else {
-                    html += `${escapeHtml(wordArray[i])} `;
+                    html += escapeHtml(wordArray[i]) + ' ';
                 }
             }
             textDisplay.innerHTML = html.trim();
