@@ -41,7 +41,8 @@ function activate(context) {
         // Crear un webview para el TTS
         const panel = vscode.window.createWebviewPanel('ttsReader', 'Lector de Texto', vscode.ViewColumn.One, {
             enableScripts: true,
-            retainContextWhenHidden: true
+            retainContextWhenHidden: true,
+            localResourceRoots: []
         });
         // Configurar el contenido del webview
         panel.webview.html = getWebviewContent(text);
@@ -57,7 +58,15 @@ function activate(context) {
                     break;
                 case 'error':
                     vscode.window.showErrorMessage(`Error en TTS: ${message.text}`);
-                    panel.dispose();
+                    break;
+                case 'debug':
+                    console.log('Debug from webview:', message.text);
+                    break;
+                case 'ready':
+                    // El webview está listo, iniciar reproducción automática
+                    setTimeout(() => {
+                        panel.webview.postMessage({ command: 'autoPlay' });
+                    }, 1500); // Delay más largo para asegurar que las voces estén cargadas
                     break;
             }
         }, undefined, context.subscriptions);
@@ -149,6 +158,14 @@ function getWebviewContent(text) {
             background-color: var(--vscode-errorForeground);
             color: var(--vscode-editor-background);
         }
+        .debug-info {
+            background-color: var(--vscode-textBlockQuote-background);
+            border-left: 3px solid var(--vscode-textBlockQuote-border);
+            padding: 10px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 12px;
+        }
     </style>
 </head>
 <body>
@@ -170,8 +187,10 @@ function getWebviewContent(text) {
             <button id="pauseBtn" disabled>⏸️ Pausar</button>
             <button id="stopBtn" disabled>⏹️ Detener</button>
             <button id="clipboardBtn">📋 Leer portapapeles</button>
+            <button id="testBtn">🧪 Probar TTS</button>
         </div>
         <div id="status" class="status info" style="display: none;"></div>
+        <div id="debugInfo" class="debug-info" style="display: none;"></div>
     </div>
     <script>
         const vscode = acquireVsCodeApi();
@@ -181,6 +200,9 @@ function getWebviewContent(text) {
         let isPaused = false;
         let voices = [];
         let selectedVoice = null;
+        let isReady = false;
+        let voicesLoaded = false;
+        
         const playBtn = document.getElementById('playBtn');
         const pauseBtn = document.getElementById('pauseBtn');
         const stopBtn = document.getElementById('stopBtn');
@@ -191,13 +213,26 @@ function getWebviewContent(text) {
         const rateValue = document.getElementById('rateValue');
         const pitchValue = document.getElementById('pitchValue');
         const clipboardBtn = document.getElementById('clipboardBtn');
+        const testBtn = document.getElementById('testBtn');
         const textDisplay = document.getElementById('textDisplay');
+        const debugInfo = document.getElementById('debugInfo');
         let originalText = ${JSON.stringify(text)};
+
+        function debugLog(message) {
+            console.log(message);
+            vscode.postMessage({ command: 'debug', text: message });
+        }
 
         function showStatus(message, isError = false) {
             status.textContent = message;
             status.className = 'status ' + (isError ? 'error' : 'info');
             status.style.display = 'block';
+            debugLog('Status: ' + message);
+        }
+
+        function showDebugInfo(info) {
+            debugInfo.innerHTML = '<strong>Información de Debug:</strong><br>' + info;
+            debugInfo.style.display = 'block';
         }
 
         function updateButtons() {
@@ -212,13 +247,9 @@ function getWebviewContent(text) {
         }
 
         function detectLanguage(text) {
-            // Heurística simple: si contiene letras acentuadas o 'ñ', es español
             if (/[áéíóúüñÁÉÍÓÚÜÑ¿¡]/.test(text)) return 'es';
-            // Si contiene solo caracteres ASCII, probablemente inglés
-            if (/^[\x00-\x7F]*$/.test(text)) return 'en';
-            // Si contiene caracteres franceses
+            if (/^[\\x00-\\x7F]*$/.test(text)) return 'en';
             if (/[çàâêîôûëïüœÇÀÂÊÎÔÛËÏÜŒ]/.test(text)) return 'fr';
-            // Por defecto, inglés
             return 'en';
         }
 
@@ -227,27 +258,43 @@ function getWebviewContent(text) {
             if (idx !== -1) voiceSelect.selectedIndex = idx;
         }
 
-        // Al poblar voces, sugerir la voz según el idioma detectado
         function populateVoices() {
             voices = synth.getVoices();
             voiceSelect.innerHTML = '';
+            
+            debugLog('Voces disponibles: ' + voices.length);
+            
+            if (voices.length === 0) {
+                showStatus('Cargando voces...');
+                return;
+            }
+            
             voices.forEach((voice, i) => {
                 const option = document.createElement('option');
                 option.value = i;
                 option.textContent = voice.name + ' (' + voice.lang + ')' + (voice.default ? ' [default]' : '');
                 voiceSelect.appendChild(option);
+                debugLog('Voz ' + i + ': ' + voice.name + ' (' + voice.lang + ')');
             });
-            // Detectar idioma del texto y sugerir voz
+            
             const lang = detectLanguage(originalText);
             selectVoiceByLang(lang);
+            
+            voicesLoaded = true;
+            showStatus('Voces cargadas. Listo para leer.');
+            
+            if (!isReady) {
+                isReady = true;
+                vscode.postMessage({ command: 'ready' });
+            }
         }
 
-        // Guardar y restaurar configuración en localStorage
         function saveSettings() {
             localStorage.setItem('tts_voice', voiceSelect.value);
             localStorage.setItem('tts_rate', rateRange.value);
             localStorage.setItem('tts_pitch', pitchRange.value);
         }
+        
         function loadSettings() {
             const v = localStorage.getItem('tts_voice');
             const r = localStorage.getItem('tts_rate');
@@ -256,13 +303,33 @@ function getWebviewContent(text) {
             if (r !== null) { rateRange.value = r; rateValue.textContent = r; }
             if (p !== null) { pitchRange.value = p; pitchValue.textContent = p; }
         }
+        
         voiceSelect.addEventListener('change', saveSettings);
         rateRange.addEventListener('change', saveSettings);
         pitchRange.addEventListener('change', saveSettings);
-        // Llamar después de poblar voces
-        synth.onvoiceschanged = () => { populateVoices(); loadSettings(); };
-        populateVoices();
-        loadSettings();
+        
+        rateRange.addEventListener('input', function() {
+            rateValue.textContent = this.value;
+        });
+        pitchRange.addEventListener('input', function() {
+            pitchValue.textContent = this.value;
+        });
+
+        synth.onvoiceschanged = () => { 
+            debugLog('Evento onvoiceschanged disparado');
+            populateVoices(); 
+            loadSettings(); 
+        };
+        
+        if (synth.getVoices().length > 0) {
+            debugLog('Voces ya disponibles al inicializar');
+            populateVoices();
+            loadSettings();
+        } else {
+            debugLog('Esperando evento onvoiceschanged');
+            populateVoices();
+            loadSettings();
+        }
 
         function highlightWord(index, wordArray) {
             if (!textDisplay) return;
@@ -282,17 +349,48 @@ function getWebviewContent(text) {
         }
 
         function speak() {
-            if (isPlaying) return;
+            debugLog('Función speak() llamada');
+            
+            if (isPlaying) {
+                debugLog('Ya está reproduciendo, ignorando');
+                return;
+            }
+            
+            if (!voicesLoaded) {
+                showStatus('Esperando a que se carguen las voces...', true);
+                debugLog('Voces no cargadas aún');
+                return;
+            }
+            
+            if (!synth) {
+                showStatus('La síntesis de voz no está disponible', true);
+                debugLog('synth no disponible');
+                return;
+            }
+            
+            debugLog('Cancelando reproducción anterior');
             synth.cancel();
+            
+            debugLog('Creando nuevo utterance');
             utterance = new SpeechSynthesisUtterance(originalText);
+            
             const voiceIdx = parseInt(voiceSelect.value, 10);
-            if (voices[voiceIdx]) utterance.voice = voices[voiceIdx];
+            if (voices[voiceIdx]) {
+                utterance.voice = voices[voiceIdx];
+                debugLog('Voz seleccionada: ' + voices[voiceIdx].name);
+            } else {
+                debugLog('No se pudo seleccionar voz');
+            }
+            
             utterance.rate = parseFloat(rateRange.value);
             utterance.pitch = parseFloat(pitchRange.value);
-            const words = originalText.split(/\s+/);
+            
+            debugLog('Configuración: rate=' + utterance.rate + ', pitch=' + utterance.pitch);
+            
+            const words = originalText.split(/\\s+/);
+            
             utterance.onboundary = function(event) {
                 if (event.name === 'word') {
-                    // Calcular el índice de la palabra actual
                     let charIndex = event.charIndex;
                     let count = 0, idx = 0;
                     for (let i = 0; i < words.length; i++) {
@@ -305,14 +403,18 @@ function getWebviewContent(text) {
                     highlightWord(idx, words);
                 }
             };
+            
             utterance.onstart = () => {
+                debugLog('Utterance iniciado');
                 isPlaying = true;
                 isPaused = false;
                 updateButtons();
                 showStatus('Leyendo texto...');
                 vscode.postMessage({ command: 'started' });
             };
+            
             utterance.onend = () => {
+                debugLog('Utterance finalizado');
                 isPlaying = false;
                 isPaused = false;
                 updateButtons();
@@ -320,7 +422,9 @@ function getWebviewContent(text) {
                 vscode.postMessage({ command: 'finished' });
                 clearHighlight();
             };
+            
             utterance.onerror = (event) => {
+                debugLog('Error en utterance: ' + event.error);
                 isPlaying = false;
                 isPaused = false;
                 updateButtons();
@@ -328,6 +432,8 @@ function getWebviewContent(text) {
                 vscode.postMessage({ command: 'error', text: event.error });
                 clearHighlight();
             };
+            
+            debugLog('Iniciando synth.speak()');
             synth.speak(utterance);
         }
 
@@ -351,6 +457,30 @@ function getWebviewContent(text) {
             isPaused = false;
             updateButtons();
             showStatus('Lectura detenida');
+            clearHighlight();
+        }
+
+        function testTTS() {
+            debugLog('Probando TTS con texto simple');
+            const testText = "Hola, esto es una prueba de síntesis de voz.";
+            const testUtterance = new SpeechSynthesisUtterance(testText);
+            
+            testUtterance.onstart = () => {
+                showStatus('Prueba iniciada...');
+                debugLog('Prueba iniciada');
+            };
+            
+            testUtterance.onend = () => {
+                showStatus('Prueba completada');
+                debugLog('Prueba completada');
+            };
+            
+            testUtterance.onerror = (event) => {
+                showStatus('Error en prueba: ' + event.error, true);
+                debugLog('Error en prueba: ' + event.error);
+            };
+            
+            synth.speak(testUtterance);
         }
 
         async function speakClipboard() {
@@ -397,18 +527,45 @@ function getWebviewContent(text) {
             }
         }
 
+        window.addEventListener('message', event => {
+            const message = event.data;
+            switch (message.command) {
+                case 'autoPlay':
+                    debugLog('Comando autoPlay recibido');
+                    setTimeout(() => {
+                        if (isReady && voicesLoaded && !isPlaying) {
+                            debugLog('Iniciando reproducción automática');
+                            speak();
+                        } else if (!voicesLoaded) {
+                            showStatus('Esperando a que se carguen las voces...');
+                            debugLog('Voces no cargadas para autoPlay');
+                        }
+                    }, 1500);
+                    break;
+            }
+        });
+
         playBtn.addEventListener('click', speak);
         pauseBtn.addEventListener('click', pauseOrResume);
         stopBtn.addEventListener('click', stop);
         clipboardBtn.addEventListener('click', speakClipboard);
+        testBtn.addEventListener('click', testTTS);
 
         if (!synth) {
             showStatus('La síntesis de voz no está disponible en este navegador', true);
             vscode.postMessage({ command: 'error', text: 'TTS no disponible' });
         } else {
-            showStatus('Listo para leer. Selecciona "Reproducir" para comenzar.');
+            showStatus('Inicializando lector de texto...');
+            debugLog('TTS disponible, inicializando...');
         }
+        
         updateButtons();
+        
+        // Mostrar información de debug inicial
+        const debugInfo = 'TTS disponible: ' + (!!synth) + '<br>' +
+                         'Voces iniciales: ' + (synth ? synth.getVoices().length : 0) + '<br>' +
+                         'Navegador: ' + navigator.userAgent;
+        showDebugInfo(debugInfo);
     </script>
 </body>
 </html>`;
